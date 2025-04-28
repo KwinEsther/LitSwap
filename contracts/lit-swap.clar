@@ -1,5 +1,5 @@
 ;; LitSwap: P2P Book Exchange Protocol
-;; Version: 1.0.0
+;; Version: 1.1.0
 (define-constant ERR-NOT-AUTHORIZED (err u1))
 (define-constant ERR-LISTING-NOT-FOUND (err u2))
 (define-constant ERR-ALREADY-LISTED (err u3))
@@ -9,8 +9,15 @@
 (define-constant ERR-INVALID-CONDITION (err u7))
 (define-constant ERR-INVALID-TITLE (err u8))
 (define-constant ERR-INVALID-DESCRIPTION (err u9))
+(define-constant ERR-EXCHANGE-NOT-FOUND (err u10))
+(define-constant ERR-SELF-EXCHANGE (err u11))
+(define-constant ERR-LISTING-UNAVAILABLE (err u12))
+(define-constant ERR-EXCHANGE-INVALID-STATUS (err u13))
 (define-constant MIN-QUANTITY u1)
+
 (define-data-var next-listing-id uint u1)
+(define-data-var next-exchange-id uint u1)
+
 (define-map listings
     uint
     {
@@ -23,6 +30,18 @@
         quantity: uint
     }
 )
+
+(define-map exchanges
+    uint
+    {
+        requester: principal,
+        owner: principal,
+        requested-listing-id: uint,
+        offered-listing-id: uint,
+        status: (string-utf8 10)
+    }
+)
+
 (define-private (validate-genre (genre (string-utf8 10)))
     (or 
         (is-eq genre u"Fiction")
@@ -33,6 +52,7 @@
         (is-eq genre u"Education")
     )
 )
+
 (define-private (validate-condition (condition (string-utf8 20)))
     (or 
         (is-eq condition u"New")
@@ -42,6 +62,7 @@
         (is-eq condition u"Poor")
     )
 )
+
 (define-private (validate-text-length (text (string-utf8 200)) (min-length uint) (max-length uint))
     (let 
         (
@@ -53,6 +74,7 @@
         )
     )
 )
+
 (define-public (create-listing 
     (book-title (string-utf8 50))
     (description (string-utf8 200))
@@ -83,6 +105,7 @@
         (ok listing-id)
     )
 )
+
 (define-public (withdraw-listing (listing-id uint))
     (let
         (
@@ -93,9 +116,153 @@
         (ok (map-set listings listing-id (merge listing { status: u"withdrawn" })))
     )
 )
+
 (define-read-only (get-listing (listing-id uint))
     (ok (map-get? listings listing-id))
 )
+
 (define-read-only (get-owner (listing-id uint))
     (ok (get owner (unwrap! (map-get? listings listing-id) ERR-LISTING-NOT-FOUND)))
+)
+
+;; New Exchange Functionality
+
+(define-public (propose-exchange (requested-listing-id uint) (offered-listing-id uint))
+    (let
+        (
+            (requested-listing (unwrap! (map-get? listings requested-listing-id) ERR-LISTING-NOT-FOUND))
+            (offered-listing (unwrap! (map-get? listings offered-listing-id) ERR-LISTING-NOT-FOUND))
+            (exchange-id (var-get next-exchange-id))
+        )
+        ;; Validate that requested listing is available
+        (asserts! (is-eq (get status requested-listing) u"available") ERR-LISTING-UNAVAILABLE)
+        
+        ;; Validate that offered listing is available and owned by sender
+        (asserts! (is-eq (get status offered-listing) u"available") ERR-LISTING-UNAVAILABLE)
+        (asserts! (is-eq (get owner offered-listing) tx-sender) ERR-NOT-AUTHORIZED)
+        
+        ;; Prevent self-exchanges
+        (asserts! (not (is-eq tx-sender (get owner requested-listing))) ERR-SELF-EXCHANGE)
+        
+        ;; Create exchange record
+        (map-set exchanges exchange-id {
+            requester: tx-sender,
+            owner: (get owner requested-listing),
+            requested-listing-id: requested-listing-id,
+            offered-listing-id: offered-listing-id,
+            status: u"pending"
+        })
+        
+        ;; Update the status of both listings to pending
+        (map-set listings requested-listing-id (merge requested-listing { status: u"pending" }))
+        (map-set listings offered-listing-id (merge offered-listing { status: u"pending" }))
+        
+        ;; Increment exchange ID
+        (var-set next-exchange-id (+ exchange-id u1))
+        
+        (ok exchange-id)
+    )
+)
+
+(define-public (accept-exchange (exchange-id uint))
+    (let
+        (
+            (exchange (unwrap! (map-get? exchanges exchange-id) ERR-EXCHANGE-NOT-FOUND))
+            (requested-listing-id (get requested-listing-id exchange))
+            (offered-listing-id (get offered-listing-id exchange))
+            (requested-listing (unwrap! (map-get? listings requested-listing-id) ERR-LISTING-NOT-FOUND))
+            (offered-listing (unwrap! (map-get? listings offered-listing-id) ERR-LISTING-NOT-FOUND))
+        )
+        ;; Validate that sender is the owner of the requested listing
+        (asserts! (is-eq tx-sender (get owner exchange)) ERR-NOT-AUTHORIZED)
+        
+        ;; Validate that exchange is pending
+        (asserts! (is-eq (get status exchange) u"pending") ERR-EXCHANGE-INVALID-STATUS)
+        
+        ;; Update exchange status
+        (map-set exchanges exchange-id (merge exchange { status: u"completed" }))
+        
+        ;; Swap ownership of the books
+        (map-set listings requested-listing-id (merge requested-listing { 
+            owner: (get requester exchange),
+            status: u"available"
+        }))
+        (map-set listings offered-listing-id (merge offered-listing { 
+            owner: tx-sender,
+            status: u"available"
+        }))
+        
+        (ok true)
+    )
+)
+
+(define-public (reject-exchange (exchange-id uint))
+    (let
+        (
+            (exchange (unwrap! (map-get? exchanges exchange-id) ERR-EXCHANGE-NOT-FOUND))
+            (requested-listing-id (get requested-listing-id exchange))
+            (offered-listing-id (get offered-listing-id exchange))
+            (requested-listing (unwrap! (map-get? listings requested-listing-id) ERR-LISTING-NOT-FOUND))
+            (offered-listing (unwrap! (map-get? listings offered-listing-id) ERR-LISTING-NOT-FOUND))
+        )
+        ;; Validate that sender is the owner of the requested listing
+        (asserts! (is-eq tx-sender (get owner exchange)) ERR-NOT-AUTHORIZED)
+        
+        ;; Validate that exchange is pending
+        (asserts! (is-eq (get status exchange) u"pending") ERR-EXCHANGE-INVALID-STATUS)
+        
+        ;; Update exchange status
+        (map-set exchanges exchange-id (merge exchange { status: u"rejected" }))
+        
+        ;; Reset listing status back to available
+        (map-set listings requested-listing-id (merge requested-listing { status: u"available" }))
+        (map-set listings offered-listing-id (merge offered-listing { status: u"available" }))
+        
+        (ok true)
+    )
+)
+
+(define-public (cancel-exchange (exchange-id uint))
+    (let
+        (
+            (exchange (unwrap! (map-get? exchanges exchange-id) ERR-EXCHANGE-NOT-FOUND))
+            (requested-listing-id (get requested-listing-id exchange))
+            (offered-listing-id (get offered-listing-id exchange))
+            (requested-listing (unwrap! (map-get? listings requested-listing-id) ERR-LISTING-NOT-FOUND))
+            (offered-listing (unwrap! (map-get? listings offered-listing-id) ERR-LISTING-NOT-FOUND))
+        )
+        ;; Validate that sender is the requester
+        (asserts! (is-eq tx-sender (get requester exchange)) ERR-NOT-AUTHORIZED)
+        
+        ;; Validate that exchange is pending
+        (asserts! (is-eq (get status exchange) u"pending") ERR-EXCHANGE-INVALID-STATUS)
+        
+        ;; Update exchange status
+        (map-set exchanges exchange-id (merge exchange { status: u"cancelled" }))
+        
+        ;; Reset listing status back to available
+        (map-set listings requested-listing-id (merge requested-listing { status: u"available" }))
+        (map-set listings offered-listing-id (merge offered-listing { status: u"available" }))
+        
+        (ok true)
+    )
+)
+
+(define-read-only (get-exchange (exchange-id uint))
+    (ok (map-get? exchanges exchange-id))
+)
+
+(define-read-only (is-exchange-for-user (exchange-id uint) (user principal))
+    (match (map-get? exchanges exchange-id)
+        exchange (or (is-eq (get requester exchange) user) 
+                     (is-eq (get owner exchange) user))
+        false
+    )
+)
+
+(define-read-only (check-exchange-status (exchange-id uint))
+    (match (map-get? exchanges exchange-id)
+        exchange (get status exchange)
+        u""
+    )
 )
