@@ -38,8 +38,7 @@
         owner: principal,
         requested-listing-id: uint,
         offered-listing-id: uint,
-        status: (string-utf8 10),
-        created-at: uint
+        status: (string-utf8 10)
     }
 )
 
@@ -134,7 +133,6 @@
             (requested-listing (unwrap! (map-get? listings requested-listing-id) ERR-LISTING-NOT-FOUND))
             (offered-listing (unwrap! (map-get? listings offered-listing-id) ERR-LISTING-NOT-FOUND))
             (exchange-id (var-get next-exchange-id))
-            (block-height (get-block-info? block-height u0))
         )
         ;; Validate that requested listing is available
         (asserts! (is-eq (get status requested-listing) u"available") ERR-LISTING-UNAVAILABLE)
@@ -152,8 +150,7 @@
             owner: (get owner requested-listing),
             requested-listing-id: requested-listing-id,
             offered-listing-id: offered-listing-id,
-            status: u"pending",
-            created-at: (default-to u0 block-height)
+            status: u"pending"
         })
         
         ;; Update the status of both listings to pending
@@ -255,11 +252,12 @@
     (ok (map-get? exchanges exchange-id))
 )
 
-(define-read-only (get-exchanges-by-user (user principal))
-    (ok { 
-        as-requester: (map-get? exchanges (filter exchange-for-requester (keys exchanges))), 
-        as-owner: (map-get? exchanges (filter exchange-for-owner (keys exchanges)))
-    })
+(define-read-only (get-exchanges-by-requester (user principal))
+    (ok (filter exchange-for-requester (keys exchanges)))
+)
+
+(define-read-only (get-exchanges-by-owner (user principal))
+    (ok (filter exchange-for-owner (keys exchanges)))
 )
 
 (define-private (exchange-for-requester (exchange-id uint))
