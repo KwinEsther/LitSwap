@@ -252,24 +252,17 @@
     (ok (map-get? exchanges exchange-id))
 )
 
-(define-read-only (get-exchanges-by-requester (user principal))
-    (ok (filter exchange-for-requester (keys exchanges)))
-)
-
-(define-read-only (get-exchanges-by-owner (user principal))
-    (ok (filter exchange-for-owner (keys exchanges)))
-)
-
-(define-private (exchange-for-requester (exchange-id uint))
+(define-read-only (is-exchange-for-user (exchange-id uint) (user principal))
     (match (map-get? exchanges exchange-id)
-        exchange (is-eq (get requester exchange) tx-sender)
+        exchange (or (is-eq (get requester exchange) user) 
+                     (is-eq (get owner exchange) user))
         false
     )
 )
 
-(define-private (exchange-for-owner (exchange-id uint))
+(define-read-only (check-exchange-status (exchange-id uint))
     (match (map-get? exchanges exchange-id)
-        exchange (is-eq (get owner exchange) tx-sender)
-        false
+        exchange (get status exchange)
+        u""
     )
 )
